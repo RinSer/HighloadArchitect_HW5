@@ -98,3 +98,50 @@ func TestAddFollower(t *testing.T) {
 		assert.Equal(t, "true", strings.Trim(rec.Body.String(), "\n"))
 	}
 }
+
+func TestRemoveFollower(t *testing.T) {
+	// Setup
+	userJSON := `{"login":"user0"}`
+	req := httptest.NewRequest(http.MethodPost, "/user",
+		strings.NewReader(userJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := testServer.NewContext(req, rec)
+	if assert.NoError(t, testService.AddUser(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+	}
+	userId1, _ := strconv.ParseInt(strings.Trim(rec.Body.String(), "\n"), 10, 64)
+	userJSON = `{"login":"user1"}`
+	req = httptest.NewRequest(http.MethodPost, "/user",
+		strings.NewReader(userJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	c = testServer.NewContext(req, rec)
+	if assert.NoError(t, testService.AddUser(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+	}
+	// add follower
+	userId2, _ := strconv.ParseInt(strings.Trim(rec.Body.String(), "\n"), 10, 64)
+	followerJSON := fmt.Sprintf(`{"userId":%d,"followerId":%d}`,
+		userId1, userId2)
+	req = httptest.NewRequest(http.MethodPost, "/follower",
+		strings.NewReader(followerJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	c = testServer.NewContext(req, rec)
+	if assert.NoError(t, testService.AddFollower(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+		assert.Equal(t, "true", strings.Trim(rec.Body.String(), "\n"))
+	}
+	// remove follower
+	req = httptest.NewRequest(http.MethodPost, "/follower?remove=true",
+		strings.NewReader(followerJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	c = testServer.NewContext(req, rec)
+	// Assertions
+	if assert.NoError(t, testService.AddFollower(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+		assert.Equal(t, "true", strings.Trim(rec.Body.String(), "\n"))
+	}
+}
