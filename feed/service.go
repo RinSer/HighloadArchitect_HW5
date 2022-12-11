@@ -111,23 +111,40 @@ func (s *Service) AddUser(c echo.Context) (err error) {
 }
 
 func (s *Service) AddFollower(c echo.Context) (err error) {
+	var rowsAffected int64
 	f := new(Follower)
 	err = c.Bind(f)
 	if err != nil {
 		return
 	}
-	tag, err := s.db.ExecContext(s.ctx,
-		`INSERT INTO followers (userId, followerId) values (?, ?);`,
-		f.UserId, f.FollowerId)
-	if err != nil {
-		return
+	remove, _ := strconv.ParseBool(c.QueryParam("remove"))
+	if remove {
+		var tag sql.Result
+		tag, err = s.db.ExecContext(s.ctx,
+			`DELETE FROM followers WHERE userId = ? && followerId = ?;`,
+			f.UserId, f.FollowerId)
+		if err != nil {
+			return
+		}
+		rowsAffected, err = tag.RowsAffected()
+		if err != nil {
+			return
+		}
+		s.rdb.SRem(s.ctx, followsSetKey(f.FollowerId), f.UserId)
+	} else {
+		var tag sql.Result
+		tag, err = s.db.ExecContext(s.ctx,
+			`INSERT INTO followers (userId, followerId) values (?, ?);`,
+			f.UserId, f.FollowerId)
+		if err != nil {
+			return
+		}
+		rowsAffected, err = tag.RowsAffected()
+		if err != nil {
+			return
+		}
+		s.rdb.SAdd(s.ctx, followsSetKey(f.FollowerId), f.UserId)
 	}
-	rowsAffected, err := tag.RowsAffected()
-	if err != nil {
-		return
-	}
-	redisKey := fmt.Sprintf("%dfollows", f.FollowerId)
-	s.rdb.LPush(s.ctx, redisKey, f.UserId)
 	return c.JSON(http.StatusCreated, rowsAffected == 1)
 }
 
@@ -141,4 +158,8 @@ func (s *Service) GetFeed(c echo.Context) (err error) {
 		return
 	}
 	return c.JSON(http.StatusOK, userId)
+}
+
+func followsSetKey(followerId int64) string {
+	return fmt.Sprintf("%dfollows", followerId)
 }
