@@ -16,6 +16,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const FeedMaxSize = 1000
+
 type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -126,7 +128,7 @@ func (s *Service) AddFollower(c echo.Context) (err error) {
 		s.rdb.SRem(s.ctx, followedSetKey(f.UserId), f.FollowerId)
 		// invalidate unfollowed publications
 		followerId := strconv.FormatInt(f.FollowerId, 10)
-		pubsList := s.rdb.LRange(s.ctx, followerId, 0, 999)
+		pubsList := s.rdb.LRange(s.ctx, followerId, 0, FeedMaxSize)
 		pubs, err := pubsList.Result()
 		if err != nil {
 			return err
@@ -193,12 +195,21 @@ func (s *Service) AddPublication(c echo.Context) (err error) {
 
 func (s *Service) GetFeed(c echo.Context) (err error) {
 	userId := c.Param("userId")
-	pubsList := s.rdb.LRange(s.ctx, userId, 0, 999)
+	pubsList := s.rdb.LRange(s.ctx, userId, 0, FeedMaxSize)
 	pubs, err := pubsList.Result()
 	if err != nil {
 		return
 	}
-	return c.JSON(http.StatusOK, pubs)
+	publications := make([]Publication, len(pubs))
+	for idx, pub := range pubs {
+		p := new(Publication)
+		err = json.Unmarshal([]byte(pub), p)
+		if err != nil {
+			return
+		}
+		publications[idx] = *p
+	}
+	return c.JSON(http.StatusOK, publications)
 }
 
 // AMQP Methods
@@ -234,7 +245,7 @@ func (s *Service) UpdateFeeds() {
 		nil,          // args
 	)
 	if err != nil {
-		log.Panic(err, "Failed to register a consumer")
+		log.Fatal(err, "Failed to register a consumer")
 	}
 
 	go func() {
@@ -244,8 +255,17 @@ func (s *Service) UpdateFeeds() {
 			followersSet := s.rdb.SMembers(s.ctx, followedSetKey(p.Author))
 			followers, _ := followersSet.Result()
 			for _, follower := range followers {
-				s.rdb.LPush(s.ctx, follower, p)
-				//s.rdb.LTrim(s.ctx, follower, 0, 999)
+				res := s.rdb.LPush(s.ctx, follower, string(msg.Body))
+				err := res.Err()
+				if err != nil {
+					log.Println(err.Error())
+				}
+				// feed should contain no more than FeedMaxSize items
+				resTrim := s.rdb.LTrim(s.ctx, follower, 0, FeedMaxSize)
+				err = resTrim.Err()
+				if err != nil {
+					log.Println(err.Error())
+				}
 			}
 		}
 	}()
