@@ -74,16 +74,6 @@ func NewService(
 	}, nil
 }
 
-func (s *Service) Db() *sql.DB {
-	return s.db
-}
-
-func (s *Service) Cancel() {
-	defer s.ch.Close()
-	defer s.conn.Close()
-	s.cancel()
-}
-
 // API handlers
 
 func (s *Service) AddUser(c echo.Context) (err error) {
@@ -134,6 +124,23 @@ func (s *Service) AddFollower(c echo.Context) (err error) {
 			return
 		}
 		s.rdb.SRem(s.ctx, followedSetKey(f.UserId), f.FollowerId)
+		// invalidate unfollowed publications
+		followerId := strconv.FormatInt(f.FollowerId, 10)
+		pubsList := s.rdb.LRange(s.ctx, followerId, 0, 999)
+		pubs, err := pubsList.Result()
+		if err != nil {
+			return err
+		}
+		for _, pub := range pubs {
+			p := new(Publication)
+			err = json.Unmarshal([]byte(pub), p)
+			if err != nil {
+				return err
+			}
+			if p.Author == f.UserId {
+				s.rdb.LRem(s.ctx, followerId, 0, pub)
+			}
+		}
 	} else {
 		var tag sql.Result
 		tag, err = s.db.ExecContext(s.ctx,
@@ -194,11 +201,7 @@ func (s *Service) GetFeed(c echo.Context) (err error) {
 	return c.JSON(http.StatusOK, pubs)
 }
 
-// Helpers
-
-func followedSetKey(userId int64) string {
-	return fmt.Sprintf("%dfollowedBy", userId)
-}
+// AMQP Methods
 
 func (s *Service) SendPublicationToQueue(pub *Publication) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -242,10 +245,26 @@ func (s *Service) UpdateFeeds() {
 			followers, _ := followersSet.Result()
 			for _, follower := range followers {
 				s.rdb.LPush(s.ctx, follower, p)
-				s.rdb.LTrim(s.ctx, follower, 0, 999)
+				//s.rdb.LTrim(s.ctx, follower, 0, 999)
 			}
 		}
 	}()
 
 	<-s.ctx.Done()
+}
+
+// Helpers
+
+func (s *Service) Db() *sql.DB {
+	return s.db
+}
+
+func (s *Service) Cancel() {
+	defer s.ch.Close()
+	defer s.conn.Close()
+	s.cancel()
+}
+
+func followedSetKey(userId int64) string {
+	return fmt.Sprintf("%dfollowedBy", userId)
 }

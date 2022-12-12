@@ -22,7 +22,7 @@ func main() {
 		e.POST("/user", s.AddUser)
 		e.POST("/follower", s.AddFollower)
 		e.POST("/publication", s.AddPublication)
-		e.GET("/feed/:user_id", s.GetFeed)
+		e.GET("/feed/:userId", s.GetFeed)
 		// run http server
 		e.Logger.Fatal(e.Start(":1234"))
 	}
