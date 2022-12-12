@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/labstack/echo"
 	"github.com/rinser/hw5/feed"
 	"github.com/stretchr/testify/assert"
@@ -30,6 +32,7 @@ func TestMain(m *testing.M) {
 		os.Exit(-1)
 	} else {
 		defer testService.Cancel()
+		go testService.UpdateFeeds()
 		scriptBytes, err := os.ReadFile("db.sql")
 		if err != nil {
 			log.Fatal(err)
@@ -143,5 +146,58 @@ func TestRemoveFollower(t *testing.T) {
 	if assert.NoError(t, testService.AddFollower(c)) {
 		assert.Equal(t, http.StatusCreated, rec.Code)
 		assert.Equal(t, "true", strings.Trim(rec.Body.String(), "\n"))
+	}
+}
+
+func TestAddPublication(t *testing.T) {
+	// Setup
+	userJSON := `{"login":"user0"}`
+	req := httptest.NewRequest(http.MethodPost, "/user",
+		strings.NewReader(userJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec := httptest.NewRecorder()
+	c := testServer.NewContext(req, rec)
+	if assert.NoError(t, testService.AddUser(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+	}
+	userId1, _ := strconv.ParseInt(strings.Trim(rec.Body.String(), "\n"), 10, 64)
+	userJSON = `{"login":"user1"}`
+	req = httptest.NewRequest(http.MethodPost, "/user",
+		strings.NewReader(userJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	c = testServer.NewContext(req, rec)
+	if assert.NoError(t, testService.AddUser(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+	}
+	userId2, _ := strconv.ParseInt(strings.Trim(rec.Body.String(), "\n"), 10, 64)
+	followerJSON := fmt.Sprintf(`{"userId":%d,"followerId":%d}`,
+		userId1, userId2)
+	req = httptest.NewRequest(http.MethodPost, "/follower",
+		strings.NewReader(followerJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	c = testServer.NewContext(req, rec)
+	if assert.NoError(t, testService.AddFollower(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+		assert.Equal(t, "true", strings.Trim(rec.Body.String(), "\n"))
+	}
+	pubText := uuid.New().String()
+	publicationJSON := fmt.Sprintf(`{"author":%d,"text":"%s"}`,
+		userId1, pubText)
+	req = httptest.NewRequest(http.MethodPost, "/publication",
+		strings.NewReader(publicationJSON))
+	req.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	rec = httptest.NewRecorder()
+	c = testServer.NewContext(req, rec)
+	// Assertions
+	if assert.NoError(t, testService.AddPublication(c)) {
+		assert.Equal(t, http.StatusCreated, rec.Code)
+		testPub := new(feed.Publication)
+		assert.NoError(t, json.Unmarshal(rec.Body.Bytes(), testPub))
+		assert.Equal(t, userId1, testPub.Author)
+		assert.Equal(t, pubText, testPub.Text)
+		assert.Greater(t, testPub.Id, int64(0))
+		assert.NotEmpty(t, testPub.At)
 	}
 }

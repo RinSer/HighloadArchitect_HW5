@@ -17,6 +17,7 @@ func main() {
 		e.Logger.Fatal(err)
 	} else {
 		defer s.Cancel()
+		go s.UpdateFeeds()
 		// add api routes
 		e.POST("/user", s.AddUser)
 		e.POST("/follower", s.AddFollower)

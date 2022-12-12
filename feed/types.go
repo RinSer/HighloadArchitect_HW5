@@ -13,7 +13,8 @@ type Follower struct {
 }
 
 type Publication struct {
-	Author int64     `json:"from"`
+	Id     int64     `json:"id"`
+	Author int64     `json:"author"`
 	Text   string    `json:"text"`
 	At     time.Time `json:"at"`
 }

@@ -3,9 +3,12 @@ package feed
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-redis/redis/v9"
 	_ "github.com/go-sql-driver/mysql"
@@ -130,7 +133,7 @@ func (s *Service) AddFollower(c echo.Context) (err error) {
 		if err != nil {
 			return
 		}
-		s.rdb.SRem(s.ctx, followsSetKey(f.FollowerId), f.UserId)
+		s.rdb.SRem(s.ctx, followedSetKey(f.UserId), f.FollowerId)
 	} else {
 		var tag sql.Result
 		tag, err = s.db.ExecContext(s.ctx,
@@ -143,23 +146,106 @@ func (s *Service) AddFollower(c echo.Context) (err error) {
 		if err != nil {
 			return
 		}
-		s.rdb.SAdd(s.ctx, followsSetKey(f.FollowerId), f.UserId)
+		s.rdb.SAdd(s.ctx, followedSetKey(f.UserId), f.FollowerId)
 	}
 	return c.JSON(http.StatusCreated, rowsAffected == 1)
 }
 
 func (s *Service) AddPublication(c echo.Context) (err error) {
-	return c.JSON(http.StatusCreated, nil)
-}
-
-func (s *Service) GetFeed(c echo.Context) (err error) {
-	userId, err := strconv.ParseInt(c.Param("userId"), 10, 64)
+	p := new(Publication)
+	err = c.Bind(p)
 	if err != nil {
 		return
 	}
-	return c.JSON(http.StatusOK, userId)
+	p.At = time.Now()
+	tx, err := s.db.BeginTx(s.ctx, nil)
+	defer func() {
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+	}()
+	if err != nil {
+		return
+	}
+	_, err = tx.ExecContext(s.ctx,
+		`INSERT INTO publications (author, txt, createdAt) values (?, ?, ?);`,
+		p.Author, p.Text, p.At)
+	if err != nil {
+		return
+	}
+	row := tx.QueryRowContext(s.ctx, `SELECT LAST_INSERT_ID();`)
+	row.Scan(&p.Id)
+	err = s.SendPublicationToQueue(p)
+	if err != nil {
+		return
+	}
+	return c.JSON(http.StatusCreated, p)
 }
 
-func followsSetKey(followerId int64) string {
-	return fmt.Sprintf("%dfollows", followerId)
+func (s *Service) GetFeed(c echo.Context) (err error) {
+	userId := c.Param("userId")
+	pubsList := s.rdb.LRange(s.ctx, userId, 0, 999)
+	pubs, err := pubsList.Result()
+	if err != nil {
+		return
+	}
+	return c.JSON(http.StatusOK, pubs)
+}
+
+// Helpers
+
+func followedSetKey(userId int64) string {
+	return fmt.Sprintf("%dfollowedBy", userId)
+}
+
+func (s *Service) SendPublicationToQueue(pub *Publication) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	body, err := json.Marshal(pub)
+	if err != nil {
+		return err
+	}
+
+	return s.ch.PublishWithContext(ctx,
+		"",           // exchange
+		s.queue.Name, // routing key
+		false,        // mandatory
+		false,        // immediate
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        body,
+		})
+}
+
+func (s *Service) UpdateFeeds() {
+	msgs, err := s.ch.Consume(
+		s.queue.Name, // queue
+		"",           // consumer
+		true,         // auto-ack
+		false,        // exclusive
+		false,        // no-local
+		false,        // no-wait
+		nil,          // args
+	)
+	if err != nil {
+		log.Panic(err, "Failed to register a consumer")
+	}
+
+	go func() {
+		for msg := range msgs {
+			p := new(Publication)
+			_ = json.Unmarshal(msg.Body, p)
+			followersSet := s.rdb.SMembers(s.ctx, followedSetKey(p.Author))
+			followers, _ := followersSet.Result()
+			for _, follower := range followers {
+				s.rdb.LPush(s.ctx, follower, p)
+				s.rdb.LTrim(s.ctx, follower, 0, 999)
+			}
+		}
+	}()
+
+	<-s.ctx.Done()
 }
